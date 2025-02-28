@@ -1,66 +1,109 @@
 import streamlit as st
+import requests
 import pandas as pd
-from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import re
 
-# Load the cleaned dataset
-@st.cache_data
-def load_data():
-    df = pd.read_parquet("../data/processed/cleaned_recipes.parquet")
+# Title of the app
+st.title("🍳 AI-Powered Recipe Recommender")
+
+# User input for ingredients
+ingredients = st.text_input("Enter ingredients you have (comma-separated):", "chicken, rice, tomato")
+
+# Function to fetch recipes from MealDB API
+def fetch_recipes(ingredients):
+    # Split ingredients into a list
+    ingredient_list = [ingredient.strip() for ingredient in ingredients.split(",")]
+    
+    # Fetch recipes from MealDB API
+    recipes = []
+    for ingredient in ingredient_list:
+        response = requests.get(f"https://www.themealdb.com/api/json/v1/1/filter.php?i={ingredient}")
+        if response.status_code == 200:
+            data = response.json()
+            if data["meals"]:
+                recipes.extend(data["meals"])
+    
+    # Remove duplicate recipes
+    unique_recipes = []
+    seen_ids = set()
+    for recipe in recipes:
+        if recipe["idMeal"] not in seen_ids:
+            unique_recipes.append(recipe)
+            seen_ids.add(recipe["idMeal"])
+    
+    return unique_recipes
+
+# Function to get recipe details by ID
+def get_recipe_details(recipe_id):
+    response = requests.get(f"https://www.themealdb.com/api/json/v1/1/lookup.php?i={recipe_id}")
+    if response.status_code == 200:
+        data = response.json()
+        return data["meals"][0]
+    return None
+
+# Function to rank recipes based on ingredient similarity
+def rank_recipes(recipes, user_ingredients):
+    # Create a DataFrame for recipes
+    recipe_data = []
+    for recipe in recipes:
+        details = get_recipe_details(recipe["idMeal"])
+        if details:
+            recipe_data.append({
+                "id": details["idMeal"],
+                "name": details["strMeal"],
+                "ingredients": ", ".join([details[f"strIngredient{i}"] for i in range(1, 21) if details[f"strIngredient{i}"]])
+            })
+    df = pd.DataFrame(recipe_data)
+    
+    # Compute TF-IDF vectors for recipe ingredients
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(df['ingredients'])
+    
+    # Compute TF-IDF vector for user ingredients
+    user_tfidf = vectorizer.transform([user_ingredients])
+    
+    # Compute cosine similarity between user ingredients and recipe ingredients
+    cosine_sim = cosine_similarity(user_tfidf, tfidf_matrix).flatten()
+    
+    # Add similarity scores to the DataFrame
+    df['similarity'] = cosine_sim
+    
+    # Sort recipes by similarity score
+    df = df.sort_values(by='similarity', ascending=False)
+    
     return df
 
-# Vectorize ingredients using HashingVectorizer
-@st.cache_resource 
-def vectorize_data(df):
-    vectorizer = HashingVectorizer(stop_words='english', n_features=1000)
-    hash_matrix = vectorizer.fit_transform(df['NER_str'])
-    return vectorizer, hash_matrix
-
-df = load_data()
-vectorizer, hash_matrix = vectorize_data(df)
-
-# Recommendation function
-def recommend_recipes(user_ingredients, vectorizer, hash_matrix, df, top_n=5):
-    # Clean user input (remove measurements and special characters)
-    user_ingredients = [re.sub(r"\d+\s?\w+\.?\s?", "", i).strip().lower() for i in user_ingredients]
-    user_input_str = ' '.join(user_ingredients)
+# Display recipes based on user input
+if st.button("Find Recipes"):
+    recipes = fetch_recipes(ingredients)
     
-    # Vectorize user input
-    user_input_vec = vectorizer.transform([user_input_str])
-    
-    # Calculate cosine similarity
-    similarity_scores = cosine_similarity(user_input_vec, hash_matrix)
-    
-    # Get top N similar recipes
-    top_indices = similarity_scores.argsort()[0][-top_n:][::-1]
-    return df.iloc[top_indices]
-
-# Streamlit app
-st.title("AI-Powered Recipe Recommender")
-st.write("Enter the ingredients you have, and we'll recommend recipes!")
-
-# User input
-user_input = st.text_input("Enter ingredients (comma-separated):")
-if user_input:
-    user_ingredients = [x.strip() for x in user_input.split(',')]
-    
-    # Get recommendations
-    recommendations = recommend_recipes(user_ingredients, vectorizer, hash_matrix, df)
-
-    # Display recommendations
-    st.write("### Recommended Recipes:")
-    for i, row in recommendations.iterrows():
-        st.write(f"**{row['title']}**")
+    if not recipes:
+        st.warning("No recipes found. Try different ingredients!")
+    else:
+        # Rank recipes based on ingredient similarity
+        ranked_recipes = rank_recipes(recipes, ingredients)
         
-        # Display ingredients line by line
-        st.write("**Ingredients:**")
-        for ingredient in row['ingredients']:
-            st.write(f"- {ingredient}")
-        
-        # Display instructions line by line
-        st.write("**Instructions:**")
-        for step in row['directions']:
-            st.write(f"- {step}")
-        
-        st.write("---")
+        # Display top 5 recipes with details
+        st.write("### Recommended Recipes")
+        for _, row in ranked_recipes.head(5).iterrows():
+            st.write(f"#### {row['name']}")
+            st.write(f"**Similarity Score**: {row['similarity']:.2f}")
+            details = get_recipe_details(row['id'])
+            if details:
+                st.image(details["strMealThumb"], width=200)
+                
+                # Display ingredients
+                st.write("##### Ingredients:")
+                for i in range(1, 21):
+                    ingredient = details.get(f"strIngredient{i}")
+                    measure = details.get(f"strMeasure{i}")
+                    if ingredient and measure:
+                        st.write(f"- {ingredient}: {measure}")
+                
+                # Display instructions
+                st.write("##### Instructions:")
+                st.write(details["strInstructions"])
+                
+                # Add a separator between recipes
+                st.write("---")
