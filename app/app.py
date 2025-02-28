@@ -7,26 +7,21 @@ import re
 # Load the cleaned dataset
 @st.cache_data
 def load_data():
-    df = pd.read_csv("cleaned_recipes.csv")
-    
-    # Handle missing or invalid data in 'NER_str'
-    df['NER_str'] = df['NER_str'].fillna('')  # Replace missing values with empty strings
-    df['NER_str'] = df['NER_str'].astype(str)  # Convert all values to strings
-    
-    # Clean the 'NER_str' column
-    df['NER_str'] = df['NER_str'].apply(lambda x: re.sub(r'\s+', ' ', x).strip())  # Remove extra spaces
-    df['NER_str'] = df['NER_str'].str.lower()  # Convert to lowercase
-    
+    df = pd.read_parquet("../data/processed/cleaned_recipes.parquet")
     return df
 
-df = load_data()
-
 # Vectorize ingredients using HashingVectorizer
-vectorizer = HashingVectorizer(stop_words='english', n_features=1000)
-hash_matrix = vectorizer.fit_transform(df['NER_str'])
+@st.cache_resource 
+def vectorize_data(df):
+    vectorizer = HashingVectorizer(stop_words='english', n_features=1000)
+    hash_matrix = vectorizer.fit_transform(df['NER_str'])
+    return vectorizer, hash_matrix
+
+df = load_data()
+vectorizer, hash_matrix = vectorize_data(df)
 
 # Recommendation function
-def recommend_recipes(user_ingredients, top_n=5):
+def recommend_recipes(user_ingredients, vectorizer, hash_matrix, df, top_n=5):
     # Clean user input (remove measurements and special characters)
     user_ingredients = [re.sub(r"\d+\s?\w+\.?\s?", "", i).strip().lower() for i in user_ingredients]
     user_input_str = ' '.join(user_ingredients)
@@ -49,11 +44,23 @@ st.write("Enter the ingredients you have, and we'll recommend recipes!")
 user_input = st.text_input("Enter ingredients (comma-separated):")
 if user_input:
     user_ingredients = [x.strip() for x in user_input.split(',')]
-    recommendations = recommend_recipes(user_ingredients)
+    
+    # Get recommendations
+    recommendations = recommend_recipes(user_ingredients, vectorizer, hash_matrix, df)
 
+    # Display recommendations
     st.write("### Recommended Recipes:")
     for i, row in recommendations.iterrows():
         st.write(f"**{row['title']}**")
-        st.write(f"**Ingredients:** {''.join(row['ingredients'])}")
-        st.write(f"**Instructions:** {row['directions']}")
+        
+        # Display ingredients line by line
+        st.write("**Ingredients:**")
+        for ingredient in row['ingredients']:
+            st.write(f"- {ingredient}")
+        
+        # Display instructions line by line
+        st.write("**Instructions:**")
+        for step in row['directions']:
+            st.write(f"- {step}")
+        
         st.write("---")

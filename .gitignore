@@ -171,4 +171,4 @@ cython_debug/
 .pypirc
 
 # Large data files
-data/
+data/raw
